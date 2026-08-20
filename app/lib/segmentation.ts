@@ -21,9 +21,9 @@ export interface DetectSegmentsOptions {
   minSide?: number;
   /** Padding added around each detected bounding box, in pixels. Defaults to 4. */
   padding?: number;
-  /** Regions within this many pixels of each other are merged into one. Defaults to 14. */
+  /** Regions within this many pixels of each other are merged into one. Defaults to 4. */
   mergeGap?: number;
-  /** Passes of morphological closing used to bridge small gaps before labeling. Defaults to 2. */
+  /** Passes of morphological closing used to bridge small gaps before labeling. Defaults to 1. */
   closeRadius?: number;
 }
 
@@ -42,8 +42,13 @@ const DEFAULT_THRESHOLD = 28;
 const DEFAULT_MIN_AREA_RATIO = 0.004;
 const DEFAULT_MIN_SIDE = 24;
 const DEFAULT_PADDING = 4;
-const DEFAULT_MERGE_GAP = 14;
-const DEFAULT_CLOSE_RADIUS = 2;
+// Real combined-photo templates commonly pack cells only 5-15px apart, far
+// tighter than this module's own earlier tests assumed. Merging/closing too
+// aggressively silently welds every cell into one blob, which then gets
+// discarded as "not combined" — worse than leaving an occasional accidental
+// split unmerged, so these defaults stay conservative.
+const DEFAULT_MERGE_GAP = 4;
+const DEFAULT_CLOSE_RADIUS = 1;
 /** A single leftover blob covering more than this share of the canvas is "one photo", not a combined sheet. */
 const SOLO_REGION_AREA_RATIO = 0.92;
 

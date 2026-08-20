@@ -106,3 +106,71 @@ test("supports a grid of four combined photos in reading order", () => {
   assert.ok(regions[0].x < regions[1].x, "top row should read left to right");
   assert.ok(regions[0].y < regions[2].y, "second row should sort after the first");
 });
+
+// Real templates (e.g. a "4 close-ups on top, 1 wide shot on the bottom" social
+// post) pack cells only a handful of pixels apart, with photo-like gradients
+// instead of flat colors and no real margin around the outside of the collage —
+// unlike every case above, whose wide gaps and solid fills made separation easy.
+test("separates a tightly-packed 4-up-plus-banner template with photo-like cells", () => {
+  const width = 1000;
+  const height = 566;
+  const gutter = 8;
+  const outerMargin = 6;
+  const topHeight = 220;
+  const cream = [237, 224, 204];
+  const buffer = createBuffer(width, height, cream);
+
+  const paintPhotoCell = (x0, y0, w, h, baseA, baseB, blobColor) => {
+    const blobX = x0 + w * 0.35;
+    const blobY = y0 + h * 0.4;
+    const blobRadius = Math.min(w, h) * 0.28;
+    for (let y = y0; y < y0 + h; y += 1) {
+      for (let x = x0; x < x0 + w; x += 1) {
+        const t = ((x - x0) / w + (y - y0) / h) / 2;
+        let color = [0, 1, 2].map((c) => Math.round(baseA[c] * (1 - t) + baseB[c] * t));
+        const distance = Math.hypot(x - blobX, y - blobY);
+        if (distance < blobRadius) {
+          const mix = 1 - distance / blobRadius;
+          color = color.map((v, i) => Math.round(v * (1 - mix) + blobColor[i] * mix));
+        }
+        const index = (y * width + x) * 4;
+        buffer.data[index] = color[0];
+        buffer.data[index + 1] = color[1];
+        buffer.data[index + 2] = color[2];
+        buffer.data[index + 3] = 255;
+      }
+    }
+  };
+
+  const cellWidth = Math.round((width - outerMargin * 2 - gutter * 3) / 4);
+  const topCells = [
+    [[160, 40, 40], [200, 90, 70], [245, 235, 220]],
+    [[210, 200, 180], [150, 30, 30], [255, 255, 255]],
+    [[40, 35, 30], [90, 70, 60], [220, 210, 195]],
+    [[25, 22, 20], [60, 50, 45], [235, 225, 210]],
+  ];
+  for (let i = 0; i < 4; i += 1) {
+    const x0 = Math.round(outerMargin + i * (cellWidth + gutter));
+    paintPhotoCell(x0, outerMargin, cellWidth, topHeight, ...topCells[i]);
+  }
+  const bottomY = outerMargin + topHeight + gutter;
+  paintPhotoCell(
+    outerMargin,
+    bottomY,
+    width - outerMargin * 2,
+    height - bottomY - outerMargin,
+    [180, 30, 35],
+    [225, 210, 190],
+    [30, 25, 20],
+  );
+
+  const regions = detectSegments(buffer);
+
+  assert.equal(regions.length, 5);
+  const [topRow, bottomRow] = [regions.slice(0, 4), regions.slice(4)];
+  for (let i = 0; i + 1 < topRow.length; i += 1) {
+    assert.ok(topRow[i].x < topRow[i + 1].x, "top row should read left to right");
+  }
+  assert.ok(bottomRow[0].y > topRow[0].y, "banner should sort after the top row");
+  assert.ok(bottomRow[0].width > topRow[0].width * 2, "banner should span most of the width");
+});
