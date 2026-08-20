@@ -73,12 +73,16 @@ test("filters out small noise specks", () => {
   assert.equal(regions.length, 2);
 });
 
-test("merges two blobs separated by a gap smaller than mergeGap", () => {
+test("merges two blobs separated by a sub-pixel-noise gap", () => {
+  // A real deliberate divider is now respected even when thin (that's the
+  // whole point of the grid-cut strategy — see the tightly-packed template
+  // test below), so only a gap this tiny — clearly noise, not a divider —
+  // should still get folded back into one region.
   const buffer = createBuffer(200, 100, [255, 255, 255]);
   paintRect(buffer, 20, 20, 40, 40, [10, 10, 10]);
-  paintRect(buffer, 65, 20, 40, 40, [10, 10, 10]); // 5px gap from the first rect
+  paintRect(buffer, 61, 20, 40, 40, [10, 10, 10]); // 1px gap from the first rect
 
-  const regions = detectSegments(buffer, { mergeGap: 14 });
+  const regions = detectSegments(buffer);
 
   assert.equal(regions.length, 1);
 });
@@ -94,11 +98,13 @@ test("keeps two blobs separate when the gap exceeds mergeGap", () => {
 });
 
 test("supports a grid of four combined photos in reading order", () => {
+  // A realistic 20px divider, not the 50px gap used before — tight,
+  // deliberately-spaced grids are the common case this module targets.
   const buffer = createBuffer(240, 240, [255, 255, 255]);
   paintRect(buffer, 10, 10, 90, 90, [200, 30, 30]);
-  paintRect(buffer, 140, 10, 90, 90, [30, 200, 30]);
-  paintRect(buffer, 10, 140, 90, 90, [30, 30, 200]);
-  paintRect(buffer, 140, 140, 90, 90, [200, 200, 30]);
+  paintRect(buffer, 120, 10, 90, 90, [30, 200, 30]);
+  paintRect(buffer, 10, 120, 90, 90, [30, 30, 200]);
+  paintRect(buffer, 120, 120, 90, 90, [200, 200, 30]);
 
   const regions = detectSegments(buffer);
 
@@ -173,4 +179,109 @@ test("separates a tightly-packed 4-up-plus-banner template with photo-like cells
   }
   assert.ok(bottomRow[0].y > topRow[0].y, "banner should sort after the top row");
   assert.ok(bottomRow[0].width > topRow[0].width * 2, "banner should span most of the width");
+});
+
+// Reproduces the actually-reported failure: cells whose own interior is
+// LARGELY the same color as the gutter (e.g. a plain wall taking up most of
+// a close-up shot), not just a busy edge-to-edge photo. Foreground/background
+// masking alone sees these as scattered small islands rather than one solid
+// cell — this is why grid-line cutting (detecting full-span background rows
+// and columns) is the primary strategy, with blob masking only as a fallback.
+test("separates cells whose interior is mostly background-colored, like a plain wall behind a close-up", () => {
+  const width = 1000;
+  const height = 566;
+  const gutter = 12;
+  const outerMargin = 8;
+  const topHeight = 220;
+  const cream = [237, 224, 204];
+  const buffer = createBuffer(width, height, cream);
+  const cellWidth = Math.round((width - outerMargin * 2 - gutter * 3) / 4);
+
+  // Panel 1: a red sleeve sweeping across ~62% of the frame, hand+pin lower-right.
+  {
+    const x0 = outerMargin;
+    paintRect(buffer, x0, outerMargin, Math.round(cellWidth * 0.62), topHeight, [165, 40, 38]);
+    paintRect(
+      buffer,
+      x0 + Math.round(cellWidth * 0.45),
+      outerMargin + Math.round(topHeight * 0.35),
+      Math.round(cellWidth * 0.35),
+      Math.round(topHeight * 0.4),
+      [230, 195, 165],
+    );
+  }
+  // Panel 2: hand + hairpin on the left, plain cream wall filling the right side.
+  {
+    const x0 = outerMargin + cellWidth + gutter;
+    paintRect(
+      buffer,
+      x0 + Math.round(cellWidth * 0.08),
+      outerMargin + Math.round(topHeight * 0.3),
+      Math.round(cellWidth * 0.55),
+      Math.round(topHeight * 0.55),
+      [225, 190, 160],
+    );
+    paintRect(
+      buffer,
+      x0 + Math.round(cellWidth * 0.15),
+      outerMargin + Math.round(topHeight * 0.1),
+      Math.round(cellWidth * 0.12),
+      Math.round(topHeight * 0.35),
+      [170, 35, 35],
+    );
+  }
+  // Panel 3: dark hair bun taking up more than half the frame.
+  {
+    const x0 = outerMargin + 2 * (cellWidth + gutter);
+    paintRect(buffer, x0 + Math.round(cellWidth * 0.3), outerMargin, Math.round(cellWidth * 0.7), topHeight, [35, 28, 24]);
+    paintRect(
+      buffer,
+      x0 + Math.round(cellWidth * 0.05),
+      outerMargin + Math.round(topHeight * 0.2),
+      Math.round(cellWidth * 0.3),
+      Math.round(topHeight * 0.5),
+      [225, 190, 160],
+    );
+  }
+  // Panel 4: dark hair fills almost the entire frame.
+  {
+    const x0 = outerMargin + 3 * (cellWidth + gutter);
+    paintRect(buffer, x0, outerMargin, cellWidth, topHeight, [22, 18, 16]);
+  }
+
+  // Bottom banner: cream wall, curtains at both edges, two robed figures
+  // connected by a hand — not floating apart with a background gap between them.
+  const bottomY = outerMargin + topHeight + gutter;
+  const bottomHeight = height - bottomY - outerMargin;
+  const bottomWidth = width - outerMargin * 2;
+  paintRect(buffer, outerMargin, bottomY, Math.round(bottomWidth * 0.06), bottomHeight, [150, 25, 25]);
+  paintRect(
+    buffer,
+    outerMargin + bottomWidth - Math.round(bottomWidth * 0.06),
+    bottomY,
+    Math.round(bottomWidth * 0.06),
+    bottomHeight,
+    [150, 25, 25],
+  );
+  paintRect(buffer, outerMargin + Math.round(bottomWidth * 0.28), bottomY + 15, Math.round(bottomWidth * 0.22), bottomHeight - 15, [170, 35, 35]);
+  paintRect(buffer, outerMargin + Math.round(bottomWidth * 0.5), bottomY + 15, Math.round(bottomWidth * 0.22), bottomHeight - 15, [170, 35, 35]);
+  paintRect(
+    buffer,
+    outerMargin + Math.round(bottomWidth * 0.47),
+    bottomY + 15,
+    Math.round(bottomWidth * 0.06),
+    Math.round((bottomHeight - 15) * 0.4),
+    [225, 190, 160],
+  );
+
+  const regions = detectSegments(buffer);
+
+  assert.equal(regions.length, 5);
+  const topRow = regions.slice(0, 4);
+  const banner = regions[4];
+  for (let i = 0; i + 1 < topRow.length; i += 1) {
+    assert.ok(topRow[i].x < topRow[i + 1].x, "top row should read left to right");
+  }
+  assert.ok(banner.y > topRow[0].y, "banner should sort after the top row");
+  assert.ok(banner.width > topRow[0].width * 2, "banner should span most of the width");
 });

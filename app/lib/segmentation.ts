@@ -25,6 +25,21 @@ export interface DetectSegmentsOptions {
   mergeGap?: number;
   /** Passes of morphological closing used to bridge small gaps before labeling. Defaults to 1. */
   closeRadius?: number;
+  /** Fraction of background pixels a full row/column needs to count as a grid gutter. Defaults to 0.97. */
+  gridGutterFraction?: number;
+  /** Minimum consecutive background rows/columns to count as a real grid gutter, in pixels. Defaults to 2. */
+  gridMinGutterThickness?: number;
+  /**
+   * Maximum consecutive background columns within a row-strip still treated
+   * as a grid gutter, as a fraction of the strip's width. A run wider than
+   * this is almost always empty space inside one photo (e.g. a plain wall
+   * around a small subject, or the gap around a decorative element) rather
+   * than a divider between cells — sized as a fraction of strip width, not
+   * an absolute pixel count, since real gutters stay a small fraction of the
+   * row's total width regardless of how large the image is, while margins
+   * inside one cell scale up right along with it. Defaults to 0.12.
+   */
+  gridMaxGutterFraction?: number;
 }
 
 interface Box {
@@ -49,22 +64,140 @@ const DEFAULT_PADDING = 4;
 // split unmerged, so these defaults stay conservative.
 const DEFAULT_MERGE_GAP = 4;
 const DEFAULT_CLOSE_RADIUS = 1;
+const DEFAULT_GRID_GUTTER_FRACTION = 0.97;
+const DEFAULT_GRID_MIN_GUTTER_THICKNESS = 2;
+const DEFAULT_GRID_MAX_GUTTER_FRACTION = 0.12;
 /** A single leftover blob covering more than this share of the canvas is "one photo", not a combined sheet. */
 const SOLO_REGION_AREA_RATIO = 0.92;
 
 /**
- * Detects individually-framed photos inside one combined image (e.g. a scanned
- * contact sheet or a manually collaged grid) by treating the color sampled from
- * the image border as background and grouping the remaining pixels into blobs.
+ * Detects individually-framed photos inside one combined image (e.g. a
+ * scanned contact sheet or a manually collaged grid).
+ *
+ * Tries two strategies:
+ *  1. Grid-line cutting: finds rows/columns that are almost entirely the
+ *     background color all the way across, and uses them as cut lines. This
+ *     is the primary strategy because it stays correct even when a cell's
+ *     own interior (e.g. a plain wall behind a close-up) matches the gutter
+ *     color — foreground/background masking alone falls apart there, since
+ *     it sees small islands of "content" rather than one solid cell.
+ *  2. Foreground blobbing: falls back to grouping non-background pixels into
+ *     blobs when the image isn't laid out as a clean grid (e.g. loose photos
+ *     scattered at arbitrary positions on a background).
+ *
  * Returns an empty array when the image looks like a single photo already.
  */
 export function detectSegments(
   buffer: PixelBuffer,
   options: DetectSegmentsOptions = {},
 ): SegmentRegion[] {
-  const { data, width, height } = buffer;
+  const { width, height } = buffer;
   if (width < 2 || height < 2) return [];
 
+  const gridRegions = detectGridCuts(buffer, options);
+  if (gridRegions.length >= 2) return gridRegions;
+
+  return detectForegroundBlobs(buffer, options);
+}
+
+function detectGridCuts(buffer: PixelBuffer, options: DetectSegmentsOptions): SegmentRegion[] {
+  const { data, width, height } = buffer;
+  const threshold = options.threshold ?? DEFAULT_THRESHOLD;
+  const minSide = options.minSide ?? DEFAULT_MIN_SIDE;
+  const padding = options.padding ?? DEFAULT_PADDING;
+  const gutterFraction = options.gridGutterFraction ?? DEFAULT_GRID_GUTTER_FRACTION;
+  const minGutterThickness = options.gridMinGutterThickness ?? DEFAULT_GRID_MIN_GUTTER_THICKNESS;
+  const maxGutterFraction = options.gridMaxGutterFraction ?? DEFAULT_GRID_MAX_GUTTER_FRACTION;
+  const maxGutterThickness = Math.max(24, Math.round(width * maxGutterFraction));
+
+  const background = estimateBackgroundColor(data, width, height);
+  const mask = buildForegroundMask(data, width, height, background, threshold * threshold);
+
+  const isRowGutter = (y: number) => {
+    let backgroundCount = 0;
+    const rowStart = y * width;
+    for (let x = 0; x < width; x += 1) {
+      if (!mask[rowStart + x]) backgroundCount += 1;
+    }
+    return backgroundCount / width >= gutterFraction;
+  };
+  // The row pass considers the FULL image width at once, so a background row
+  // there means every cell in that row is absent — always safe to cut on, no
+  // matter how wide the resulting gap is. Only the column pass (below, run
+  // per row-strip) needs the max-thickness cap, since a wide background run
+  // there can just as easily be empty space inside one cell as a real gutter.
+  const rowBands = contentBands(height, isRowGutter, minGutterThickness, Infinity, minSide);
+
+  const regions: Box[] = [];
+  for (const [y0, y1] of rowBands) {
+    const stripHeight = y1 - y0;
+    const isColGutter = (x: number) => {
+      let backgroundCount = 0;
+      for (let y = y0; y < y1; y += 1) {
+        if (!mask[y * width + x]) backgroundCount += 1;
+      }
+      return backgroundCount / stripHeight >= gutterFraction;
+    };
+    const colBands = contentBands(width, isColGutter, minGutterThickness, maxGutterThickness, minSide);
+    for (const [x0, x1] of colBands) {
+      regions.push({ x: x0, y: y0, width: x1 - x0, height: stripHeight });
+    }
+  }
+
+  return regions.map((box) => padBox(box, padding, width, height)).sort(readingOrder);
+}
+
+/**
+ * Scans a 1D span of `length` positions and treats a run of "gutter"
+ * positions as a real divider only when its length falls within
+ * [minGutterThickness, maxGutterThickness] — too thin looks like noise, too
+ * wide looks like empty space inside a single cell rather than a boundary
+ * between cells. Everything else is folded back into content, and the
+ * resulting content runs are returned as [start, end) bands, dropping any
+ * band narrower than `minBandSize`.
+ */
+function contentBands(
+  length: number,
+  isGutter: (index: number) => boolean,
+  minGutterThickness: number,
+  maxGutterThickness: number,
+  minBandSize: number,
+): Array<[number, number]> {
+  const gutter = new Uint8Array(length);
+  for (let i = 0; i < length; i += 1) gutter[i] = isGutter(i) ? 1 : 0;
+
+  // Discard gutter runs that are too thin (noise) or too wide (empty space
+  // inside a cell, not a deliberate divider) to be a real boundary.
+  let runStart = -1;
+  for (let i = 0; i <= length; i += 1) {
+    const isGutterHere = i < length && gutter[i] === 1;
+    if (isGutterHere && runStart === -1) {
+      runStart = i;
+    } else if (!isGutterHere && runStart !== -1) {
+      const runLength = i - runStart;
+      if (runLength < minGutterThickness || runLength > maxGutterThickness) {
+        for (let j = runStart; j < i; j += 1) gutter[j] = 0;
+      }
+      runStart = -1;
+    }
+  }
+
+  const bands: Array<[number, number]> = [];
+  let bandStart = -1;
+  for (let i = 0; i <= length; i += 1) {
+    const isContent = i < length && gutter[i] === 0;
+    if (isContent && bandStart === -1) {
+      bandStart = i;
+    } else if (!isContent && bandStart !== -1) {
+      if (i - bandStart >= minBandSize) bands.push([bandStart, i]);
+      bandStart = -1;
+    }
+  }
+  return bands;
+}
+
+function detectForegroundBlobs(buffer: PixelBuffer, options: DetectSegmentsOptions): SegmentRegion[] {
+  const { data, width, height } = buffer;
   const threshold = options.threshold ?? DEFAULT_THRESHOLD;
   const minAreaRatio = options.minAreaRatio ?? DEFAULT_MIN_AREA_RATIO;
   const minSide = options.minSide ?? DEFAULT_MIN_SIDE;
@@ -72,7 +205,7 @@ export function detectSegments(
   const mergeGap = options.mergeGap ?? DEFAULT_MERGE_GAP;
   const closeRadius = options.closeRadius ?? DEFAULT_CLOSE_RADIUS;
 
-  const background = sampleBorderColor(data, width, height);
+  const background = estimateBackgroundColor(data, width, height);
   const mask = closeMask(
     buildForegroundMask(data, width, height, background, threshold * threshold),
     width,
@@ -106,37 +239,51 @@ export function detectSegments(
     .sort(readingOrder);
 }
 
-function sampleBorderColor(
+/**
+ * Estimates the background/gutter color as the modal color across the whole
+ * image, not just its outer border. A collaged photo can bleed all the way to
+ * the frame edge (no real margin), so border sampling alone can pick up
+ * actual photo content instead of the gutter color between cells.
+ */
+function estimateBackgroundColor(
   data: Uint8ClampedArray,
   width: number,
   height: number,
 ): { r: number; g: number; b: number } {
-  const r: number[] = [];
-  const g: number[] = [];
-  const b: number[] = [];
-  const sample = (x: number, y: number) => {
-    const index = (y * width + x) * 4;
-    r.push(data[index]);
-    g.push(data[index + 1]);
-    b.push(data[index + 2]);
-  };
+  const totalPixels = width * height;
+  const targetSamples = 20_000;
+  const stride = Math.max(1, Math.floor(Math.sqrt(totalPixels / targetSamples)));
+  const bucketSize = 12;
 
-  for (let x = 0; x < width; x += 1) {
-    sample(x, 0);
-    sample(x, height - 1);
+  const buckets = new Map<number, { count: number; r: number; g: number; b: number }>();
+  for (let y = 0; y < height; y += stride) {
+    for (let x = 0; x < width; x += stride) {
+      const index = (y * width + x) * 4;
+      const r = data[index];
+      const g = data[index + 1];
+      const b = data[index + 2];
+      const key =
+        (Math.floor(r / bucketSize) << 16) |
+        (Math.floor(g / bucketSize) << 8) |
+        Math.floor(b / bucketSize);
+      const bucket = buckets.get(key);
+      if (bucket) {
+        bucket.count += 1;
+        bucket.r += r;
+        bucket.g += g;
+        bucket.b += b;
+      } else {
+        buckets.set(key, { count: 1, r, g, b });
+      }
+    }
   }
-  for (let y = 0; y < height; y += 1) {
-    sample(0, y);
-    sample(width - 1, y);
+
+  let best: { count: number; r: number; g: number; b: number } | undefined;
+  for (const bucket of buckets.values()) {
+    if (!best || bucket.count > best.count) best = bucket;
   }
-
-  return { r: median(r), g: median(g), b: median(b) };
-}
-
-function median(values: number[]): number {
-  const sorted = [...values].sort((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
-  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+  if (!best) return { r: 255, g: 255, b: 255 };
+  return { r: best.r / best.count, g: best.g / best.count, b: best.b / best.count };
 }
 
 function buildForegroundMask(
