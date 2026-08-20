@@ -7,6 +7,7 @@ import {
   detectImageSegments,
   optimizeImageFile,
   renderOperations,
+  renderSegmentationDebugView,
   type EditorOperation,
   type SegmentRegion,
 } from "./lib/image";
@@ -92,6 +93,7 @@ export default function ReshapeStudio() {
   const [segments, setSegments] = useState<SegmentRegion[] | null>(null);
   const [segmentPreviews, setSegmentPreviews] = useState<string[]>([]);
   const [isSegmenting, setIsSegmenting] = useState(false);
+  const [segmentDebug, setSegmentDebug] = useState<{ background: string; overlayUrl: string } | null>(null);
 
   const renderSource = documentState?.sourceDataUrl;
   const renderHistory = documentState?.history;
@@ -161,6 +163,7 @@ export default function ReshapeStudio() {
   const resetSegments = useCallback(() => {
     setSegments(null);
     setSegmentPreviews([]);
+    setSegmentDebug(null);
   }, []);
 
   const setCursor = useCallback((cursor: number) => {
@@ -324,9 +327,16 @@ export default function ReshapeStudio() {
     };
   }, [segmentPreviews]);
 
+  useEffect(() => {
+    return () => {
+      if (segmentDebug) URL.revokeObjectURL(segmentDebug.overlayUrl);
+    };
+  }, [segmentDebug]);
+
   const runSegmentation = useCallback(async () => {
     if (!canvasRef.current) return;
     setIsSegmenting(true);
+    setSegmentDebug(null);
     try {
       const regions = detectImageSegments(canvasRef.current);
       if (regions.length === 0) {
@@ -356,6 +366,25 @@ export default function ReshapeStudio() {
       });
     } finally {
       setIsSegmenting(false);
+    }
+  }, [showToast]);
+
+  const showSegmentDebug = useCallback(async () => {
+    if (!canvasRef.current) return;
+    try {
+      const { background, overlayCanvas } = renderSegmentationDebugView(canvasRef.current);
+      const blob = await canvasToBlob(overlayCanvas, "image/png", 1);
+      const overlayUrl = URL.createObjectURL(blob);
+      const backgroundLabel = `rgb(${Math.round(background.r)}, ${Math.round(background.g)}, ${Math.round(background.b)})`;
+      setSegmentDebug((current) => {
+        if (current) URL.revokeObjectURL(current.overlayUrl);
+        return { background: backgroundLabel, overlayUrl };
+      });
+    } catch (error) {
+      showToast({
+        tone: "error",
+        message: error instanceof Error ? error.message : "诊断信息生成失败。",
+      });
     }
   }, [showToast]);
 
@@ -580,7 +609,23 @@ export default function ReshapeStudio() {
                 )}
 
                 {segments && segments.length === 0 && (
-                  <p className="segment-empty">未检测到可拆分的独立图片。试试让每张照片之间留出更明显的纯色空白。</p>
+                  <>
+                    <p className="segment-empty">未检测到可拆分的独立图片。试试让每张照片之间留出更明显的纯色空白。</p>
+                    <button className="quiet-button segment-debug-button" type="button" onClick={() => void showSegmentDebug()}>
+                      查看诊断信息
+                    </button>
+                  </>
+                )}
+
+                {segmentDebug && (
+                  <div className="segment-debug">
+                    <div className="control-title"><strong>诊断信息</strong><span>调试</span></div>
+                    <p className="segment-hint">
+                      粉色高亮的区域是被识别为「照片内容」的像素，未高亮区域被当作背景/间隙。识别到的背景色：
+                      <code>{segmentDebug.background}</code>
+                    </p>
+                    <img className="segment-debug-image" src={segmentDebug.overlayUrl} alt="自动分割诊断视图：粉色为识别到的照片内容" />
+                  </div>
                 )}
               </>
             )}

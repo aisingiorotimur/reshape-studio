@@ -1,4 +1,4 @@
-import { detectSegments, type DetectSegmentsOptions, type SegmentRegion } from "./segmentation";
+import { debugSegmentation, detectSegments, type DetectSegmentsOptions, type SegmentRegion } from "./segmentation";
 
 export type { DetectSegmentsOptions, SegmentRegion } from "./segmentation";
 
@@ -407,6 +407,43 @@ export function detectImageSegments(
   }
   const imageData = getContext(source).getImageData(0, 0, source.width, source.height);
   return detectSegments({ data: imageData.data, width: source.width, height: source.height }, options);
+}
+
+export interface SegmentationDebugView {
+  background: { r: number; g: number; b: number };
+  /** Original image with pixels classified as "photo content" tinted magenta, background left as-is. */
+  overlayCanvas: HTMLCanvasElement;
+}
+
+/**
+ * Renders what auto-segmentation sees on this specific image: the background
+ * color it estimated, and an overlay highlighting every pixel it classifies
+ * as photo content vs. background/gutter. Useful for diagnosing a detection
+ * that finds nothing or splits incorrectly.
+ */
+export function renderSegmentationDebugView(
+  source: HTMLCanvasElement,
+  options?: DetectSegmentsOptions,
+): SegmentationDebugView {
+  const imageData = getContext(source).getImageData(0, 0, source.width, source.height);
+  const debugInfo = debugSegmentation(
+    { data: imageData.data, width: source.width, height: source.height },
+    options,
+  );
+
+  const overlay = createCanvas(source.width, source.height);
+  const overlayContext = getContext(overlay);
+  overlayContext.drawImage(source, 0, 0);
+  const overlayData = overlayContext.getImageData(0, 0, source.width, source.height);
+  for (let pixel = 0, index = 0; pixel < debugInfo.foregroundMask.length; pixel += 1, index += 4) {
+    if (!debugInfo.foregroundMask[pixel]) continue;
+    overlayData.data[index] = Math.min(255, overlayData.data[index] * 0.35 + 255 * 0.65);
+    overlayData.data[index + 1] = Math.round(overlayData.data[index + 1] * 0.35);
+    overlayData.data[index + 2] = Math.min(255, overlayData.data[index + 2] * 0.35 + 255 * 0.65);
+  }
+  overlayContext.putImageData(overlayData, 0, 0);
+
+  return { background: debugInfo.background, overlayCanvas: overlay };
 }
 
 export function cropRegionToCanvas(

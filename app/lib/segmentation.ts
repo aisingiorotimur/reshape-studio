@@ -70,6 +70,28 @@ const DEFAULT_GRID_MAX_GUTTER_FRACTION = 0.12;
 /** A single leftover blob covering more than this share of the canvas is "one photo", not a combined sheet. */
 const SOLO_REGION_AREA_RATIO = 0.92;
 
+export interface SegmentationDebugInfo {
+  background: { r: number; g: number; b: number };
+  /** 1 = classified as photo content, 0 = classified as background/gutter. Row-major, same size as the input. */
+  foregroundMask: Uint8Array;
+}
+
+/**
+ * Exposes the background-color estimate and per-pixel foreground/background
+ * classification that {@link detectSegments} uses internally, so a caller can
+ * visualize why detection did or didn't find a split on a specific image.
+ */
+export function debugSegmentation(
+  buffer: PixelBuffer,
+  options: DetectSegmentsOptions = {},
+): SegmentationDebugInfo {
+  const { data, width, height } = buffer;
+  const threshold = options.threshold ?? DEFAULT_THRESHOLD;
+  const background = estimateBackgroundColor(data, width, height);
+  const foregroundMask = buildForegroundMask(data, width, height, background, threshold * threshold);
+  return { background, foregroundMask };
+}
+
 /**
  * Detects individually-framed photos inside one combined image (e.g. a
  * scanned contact sheet or a manually collaged grid).

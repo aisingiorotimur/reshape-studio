@@ -98,6 +98,11 @@ button:disabled { cursor: not-allowed !important; opacity: .38; }
 .segment-meta { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 6px 8px; font: 10px var(--font-geist-mono), monospace; color: var(--muted); }
 .segment-meta button { border: 0; background: transparent; color: var(--ink); cursor: pointer; font-weight: 700; text-decoration: underline; }
 .segment-empty { margin: 16px 0 0; padding: 12px; border: 1px dashed var(--line); color: var(--muted); font-size: 11px; line-height: 1.55; }
+.segment-debug-button { margin-top: 8px; padding: 0; text-decoration: underline; font-size: 11px; }
+.segment-debug { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); }
+.segment-debug .segment-hint { margin-bottom: 10px; }
+.segment-debug code { padding: 1px 4px; background: var(--paper-2); font: 10px var(--font-geist-mono), monospace; }
+.segment-debug-image { display: block; width: 100%; border: 1px solid var(--line); background: repeating-conic-gradient(#eee 0 25%, #ddd 0 50%) 50% / 12px 12px; }
 
 .privacy-note { margin-top: auto; display: grid; grid-template-columns: 8px 1fr; gap: 10px; padding: 14px 12px; border: 1px solid var(--line); background: var(--paper-2); }
 .privacy-note p { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.55; }
