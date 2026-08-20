@@ -3,9 +3,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   canvasToBlob,
+  cropRegionToCanvas,
+  detectImageSegments,
   optimizeImageFile,
   renderOperations,
   type EditorOperation,
+  type SegmentRegion,
 } from "./lib/image";
 import {
   buildShareUrl,
@@ -14,7 +17,7 @@ import {
   type ShareDocument,
 } from "./lib/share";
 
-type Tool = "resize" | "crop" | "rotate" | "flip";
+type Tool = "resize" | "crop" | "rotate" | "flip" | "segment";
 type Toast = { tone: "success" | "error" | "info"; message: string } | null;
 
 const tools: Array<{ id: Tool; index: string; name: string; meta: string }> = [
@@ -22,6 +25,7 @@ const tools: Array<{ id: Tool; index: string; name: string; meta: string }> = [
   { id: "crop", index: "02", name: "裁切比例", meta: "构图" },
   { id: "rotate", index: "03", name: "旋转", meta: "90°" },
   { id: "flip", index: "04", name: "翻转", meta: "镜像" },
+  { id: "segment", index: "05", name: "自动分割", meta: "拆分" },
 ];
 
 const cropPresets = [
@@ -85,6 +89,9 @@ export default function ReshapeStudio() {
   const [shareBusy, setShareBusy] = useState(false);
   const [toast, setToast] = useState<Toast>(null);
   const [loadedFromShare, setLoadedFromShare] = useState(false);
+  const [segments, setSegments] = useState<SegmentRegion[] | null>(null);
+  const [segmentPreviews, setSegmentPreviews] = useState<string[]>([]);
+  const [isSegmenting, setIsSegmenting] = useState(false);
 
   const renderSource = documentState?.sourceDataUrl;
   const renderHistory = documentState?.history;
@@ -151,20 +158,28 @@ export default function ReshapeStudio() {
       });
   }, [renderSource, renderHistory, renderCursor, showToast]);
 
+  const resetSegments = useCallback(() => {
+    setSegments(null);
+    setSegmentPreviews([]);
+  }, []);
+
   const setCursor = useCallback((cursor: number) => {
+    resetSegments();
     setDocumentState((current) => {
       if (!current) return current;
       return { ...current, cursor: Math.max(0, Math.min(cursor, current.history.length)) };
     });
-  }, []);
+  }, [resetSegments]);
 
   const undo = useCallback(() => {
+    resetSegments();
     setDocumentState((current) => current ? { ...current, cursor: Math.max(0, current.cursor - 1) } : current);
-  }, []);
+  }, [resetSegments]);
 
   const redo = useCallback(() => {
+    resetSegments();
     setDocumentState((current) => current ? { ...current, cursor: Math.min(current.history.length, current.cursor + 1) } : current);
-  }, []);
+  }, [resetSegments]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -195,6 +210,7 @@ export default function ReshapeStudio() {
     try {
       const optimized = await optimizeImageFile(file);
       const now = new Date().toISOString();
+      resetSegments();
       setDocumentState({
         version: 1,
         id: id("doc"),
@@ -227,13 +243,14 @@ export default function ReshapeStudio() {
       setIsImporting(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
     }
-  }, [showToast]);
+  }, [resetSegments, showToast]);
 
   const applyOperation = useCallback((operation: EditorOperation, label: string) => {
     if (documentState && documentState.cursor >= 100) {
       showToast({ tone: "info", message: "一个快照最多保留 100 步。可以导出当前结果，再作为新图片继续。" });
       return;
     }
+    resetSegments();
     setDocumentState((current) => {
       if (!current) return current;
       const entry = {
@@ -251,7 +268,7 @@ export default function ReshapeStudio() {
         updatedAt: entry.at,
       };
     });
-  }, [author, documentState, showToast]);
+  }, [author, documentState, resetSegments, showToast]);
 
   const applyResize = () => {
     const width = Math.round(Number(resizeWidth));
@@ -300,6 +317,69 @@ export default function ReshapeStudio() {
       showToast({ tone: "error", message: error instanceof Error ? error.message : "导出失败。" });
     }
   };
+
+  useEffect(() => {
+    return () => {
+      segmentPreviews.forEach((url) => URL.revokeObjectURL(url));
+    };
+  }, [segmentPreviews]);
+
+  const runSegmentation = useCallback(async () => {
+    if (!canvasRef.current) return;
+    setIsSegmenting(true);
+    try {
+      const regions = detectImageSegments(canvasRef.current);
+      if (regions.length === 0) {
+        setSegments([]);
+        setSegmentPreviews([]);
+        showToast({
+          tone: "info",
+          message: "未检测到可拆分的独立图片。背景越纯色、图片间空隙越明显，识别效果越好。",
+        });
+        return;
+      }
+
+      const previews = await Promise.all(
+        regions.map(async (region) => {
+          const cropped = cropRegionToCanvas(canvasRef.current!, region);
+          const blob = await canvasToBlob(cropped, "image/png", 1);
+          return URL.createObjectURL(blob);
+        }),
+      );
+      setSegments(regions);
+      setSegmentPreviews(previews);
+      showToast({ tone: "success", message: `检测到 ${regions.length} 张独立图片。` });
+    } catch (error) {
+      showToast({
+        tone: "error",
+        message: error instanceof Error ? error.message : "自动分割失败，请重试。",
+      });
+    } finally {
+      setIsSegmenting(false);
+    }
+  }, [showToast]);
+
+  const downloadSegment = useCallback(async (index: number) => {
+    if (!canvasRef.current || !segments) return;
+    const cropped = cropRegionToCanvas(canvasRef.current, segments[index]);
+    const blob = await canvasToBlob(cropped, "image/png", 1);
+    const url = URL.createObjectURL(blob);
+    const anchor = window.document.createElement("a");
+    anchor.href = url;
+    anchor.download = `${documentState?.title || "reshape"}-part-${index + 1}.png`;
+    anchor.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }, [documentState, segments]);
+
+  const downloadAllSegments = useCallback(async () => {
+    if (!segments) return;
+    for (let index = 0; index < segments.length; index += 1) {
+      await downloadSegment(index);
+      // Browsers block rapid same-tick downloads; a short gap keeps every file intact.
+      await new Promise((resolve) => window.setTimeout(resolve, 220));
+    }
+    showToast({ tone: "success", message: `已导出 ${segments.length} 张图片。` });
+  }, [downloadSegment, segments, showToast]);
 
   const openShare = async () => {
     if (!documentState) {
@@ -460,6 +540,48 @@ export default function ReshapeStudio() {
                   <button type="button" disabled={!documentState} onClick={() => applyOperation({ kind: "flip", axis: "horizontal" }, "水平翻转")}><b>↔</b><span>水平翻转</span></button>
                   <button type="button" disabled={!documentState} onClick={() => applyOperation({ kind: "flip", axis: "vertical" }, "垂直翻转")}><b>↕</b><span>垂直翻转</span></button>
                 </div>
+              </>
+            )}
+
+            {activeTool === "segment" && (
+              <>
+                <div className="control-title"><strong>自动分割</strong><span>拆分</span></div>
+                <p className="segment-hint">
+                  适合一张画布里拼了多张照片的情况：背景越纯色、每张照片之间的空隙越明显，识别越准确。分割不会写入编辑历史，可以反复检测。
+                </p>
+                <button
+                  className="apply-button"
+                  type="button"
+                  onClick={() => void runSegmentation()}
+                  disabled={!documentState || isSegmenting}
+                >
+                  {isSegmenting ? "正在识别…" : "检测独立图片"} <span>→</span>
+                </button>
+
+                {segments && segments.length > 0 && (
+                  <>
+                    <div className="segment-grid">
+                      {segments.map((region, index) => (
+                        <div className="segment-card" key={`${region.x}-${region.y}-${region.width}-${region.height}`}>
+                          {segmentPreviews[index] && (
+                            <img src={segmentPreviews[index]} alt={`检测到的第 ${index + 1} 张图片`} />
+                          )}
+                          <div className="segment-meta">
+                            <span>{Math.round(region.width)} × {Math.round(region.height)}</span>
+                            <button type="button" onClick={() => void downloadSegment(index)}>下载</button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    <button className="apply-button" type="button" onClick={() => void downloadAllSegments()}>
+                      全部下载 · {segments.length} 张 <span>↓</span>
+                    </button>
+                  </>
+                )}
+
+                {segments && segments.length === 0 && (
+                  <p className="segment-empty">未检测到可拆分的独立图片。试试让每张照片之间留出更明显的纯色空白。</p>
+                )}
               </>
             )}
           </section>

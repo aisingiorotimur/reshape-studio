@@ -1,3 +1,7 @@
+import { detectSegments, type DetectSegmentsOptions, type SegmentRegion } from "./segmentation";
+
+export type { DetectSegmentsOptions, SegmentRegion } from "./segmentation";
+
 export type EditorOperation =
   | {
       kind: "resize";
@@ -388,6 +392,34 @@ function renderOperation(
     const message = error instanceof Error ? error.message : "未知错误";
     throw new Error(`第 ${index + 1} 步处理失败：${message}`);
   }
+}
+
+/**
+ * Detects individually-framed photos inside the canvas (e.g. several prints
+ * scanned together on one sheet) so each can be exported on its own.
+ */
+export function detectImageSegments(
+  source: HTMLCanvasElement,
+  options?: DetectSegmentsOptions,
+): SegmentRegion[] {
+  if (source.width < 1 || source.height < 1) {
+    throw new Error("画布尺寸无效，无法检测独立图片。");
+  }
+  const imageData = getContext(source).getImageData(0, 0, source.width, source.height);
+  return detectSegments({ data: imageData.data, width: source.width, height: source.height }, options);
+}
+
+export function cropRegionToCanvas(
+  source: HTMLCanvasElement,
+  region: SegmentRegion,
+): HTMLCanvasElement {
+  const x = Math.max(0, Math.min(source.width - 1, Math.round(region.x)));
+  const y = Math.max(0, Math.min(source.height - 1, Math.round(region.y)));
+  const width = Math.max(1, Math.min(source.width - x, Math.round(region.width)));
+  const height = Math.max(1, Math.min(source.height - y, Math.round(region.height)));
+  const canvas = createCanvas(width, height);
+  getContext(canvas).drawImage(source, x, y, width, height, 0, 0, width, height);
+  return canvas;
 }
 
 export async function canvasToBlob(
