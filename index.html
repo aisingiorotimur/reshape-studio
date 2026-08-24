@@ -181,7 +181,7 @@
       linear-gradient(-45deg, transparent 75%, color-mix(in srgb, var(--text) 6%, transparent) 75%) 0 0/16px 16px;
   }
   #previewCanvas { display: block; max-width: 100%; height: auto; }
-  #overlaySvg { position: absolute; top: 0; left: 0; pointer-events: none; }
+  #overlaySvg { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
   #overlaySvg rect {
     fill: color-mix(in srgb, var(--accent) 14%, transparent);
     stroke: var(--accent);
@@ -279,7 +279,7 @@
       <button class="primary" id="runSplit">自动检测并分割</button>
       <div class="field">
         <label for="sensitivity">灵敏度（背景/前景阈值）</label>
-        <input id="sensitivity" type="range" min="10" max="60" value="28" />
+        <input id="sensitivity" type="range" min="10" max="60" value="24" />
       </div>
       <label class="check"><input id="showDebug" type="checkbox" /> 显示检测调试视图</label>
     </div>
@@ -321,11 +321,22 @@
     padding: 4,
     mergeGap: 4,
     closeRadius: 1,
-    gridGutterFraction: 0.97,
+    gridGutterFraction: 0.88,
     gridMinGutterThickness: 2,
     gridMaxGutterFraction: 0.12,
   };
   const SOLO_REGION_AREA_RATIO = 0.92;
+  // Real templates often light the page unevenly (a soft vignette, or paper-grain
+  // shading), so the "background" gutter color can drift by 30-50 per channel
+  // between one edge of the image and another. A gutter test that only accepts
+  // pixels within a tight distance of ONE fixed color misses that drifted gutter
+  // entirely. Instead each row/column is tested against its OWN local median
+  // color (tight match), gated by a much looser sanity check against the
+  // whole-image background estimate (LOOSE_*) so a large flat patch of actual
+  // photo content — which can be just as internally uniform as a gutter — still
+  // gets rejected for being the wrong color altogether.
+  const LOOSE_THRESHOLD_MULTIPLIER = 4;
+  const LOOSE_THRESHOLD_MIN = 70;
 
   function estimateBackgroundColor(data, width, height) {
     const totalPixels = width * height;
@@ -526,32 +537,110 @@
     return bands;
   }
 
+  /**
+   * A grid cell that's much narrower/shorter than its row/column siblings is
+   * almost always a spurious split — a faint internal seam (a fold, a shadow,
+   * a patch of content that happens to sit near the gutter color) that cleared
+   * the gutter test by accident. Real deliberately-laid-out cells in one row
+   * or column tend to be similarly sized, so a band under ~45% of the local
+   * median width gets folded back into its nearest neighbor instead of kept
+   * as its own region.
+   */
+  function mergeThinBands(bands, minRatio = 0.45) {
+    if (bands.length <= 1) return bands;
+    let result = bands.slice();
+    let changed = true;
+    while (changed && result.length > 1) {
+      changed = false;
+      const widths = result.map(([s, e]) => e - s).sort((a, b) => a - b);
+      const median = widths[Math.floor(widths.length / 2)];
+      for (let i = 0; i < result.length; i++) {
+        const w = result[i][1] - result[i][0];
+        if (w < median * minRatio) {
+          if (i > 0) {
+            result[i - 1] = [result[i - 1][0], result[i][1]];
+            result.splice(i, 1);
+          } else if (i < result.length - 1) {
+            result[i] = [result[i][0], result[i + 1][1]];
+            result.splice(i + 1, 1);
+          } else {
+            break;
+          }
+          changed = true;
+          break;
+        }
+      }
+    }
+    return result;
+  }
+
+  /** Mean color of a 1D span, used as a cheap proxy for its median. */
+  function spanMeanRow(data, width, y, stride) {
+    let rs = 0, gs = 0, bs = 0, n = 0;
+    const rowStart = y * width;
+    for (let x = 0; x < width; x += stride) {
+      const i = (rowStart + x) * 4;
+      rs += data[i]; gs += data[i + 1]; bs += data[i + 2]; n += 1;
+    }
+    return { r: rs / n, g: gs / n, b: bs / n };
+  }
+  function spanMeanCol(data, width, x, y0, y1, stride) {
+    let rs = 0, gs = 0, bs = 0, n = 0;
+    for (let y = y0; y < y1; y += stride) {
+      const i = (y * width + x) * 4;
+      rs += data[i]; gs += data[i + 1]; bs += data[i + 2]; n += 1;
+    }
+    return { r: rs / n, g: gs / n, b: bs / n };
+  }
+  function distSq(r, g, b, ref) {
+    const dr = r - ref.r, dg = g - ref.g, db = b - ref.b;
+    return dr * dr + dg * dg + db * db;
+  }
+
   function detectGridCuts(buffer, threshold, options) {
     const { data, width, height } = buffer;
     const minSide = options.minSide, padding = options.padding;
     const gutterFraction = options.gridGutterFraction;
     const minGutterThickness = options.gridMinGutterThickness;
-    const maxGutterThickness = Math.max(24, Math.round(width * options.gridMaxGutterFraction));
+    const maxColGutterThickness = Math.max(24, Math.round(width * options.gridMaxGutterFraction));
+    const maxRowGutterThickness = Math.max(24, Math.round(height * options.gridMaxGutterFraction));
     const background = estimateBackgroundColor(data, width, height);
-    const mask = buildForegroundMask(data, width, height, background, threshold * threshold);
+    const tightSq = threshold * threshold;
+    const looseSq = Math.max(LOOSE_THRESHOLD_MIN, threshold * LOOSE_THRESHOLD_MULTIPLIER) ** 2;
+    // Kept only for the optional debug overlay — a plain global-threshold mask
+    // approximates what counts as "foreground" for visualization purposes,
+    // even though the actual cut decisions below use local row/column medians.
+    const mask = buildForegroundMask(data, width, height, background, tightSq);
 
     const isRowGutter = (y) => {
+      const local = spanMeanRow(data, width, y, 3);
+      if (distSq(local.r, local.g, local.b, background) > looseSq) return false;
       let bgCount = 0;
       const rowStart = y * width;
-      for (let x = 0; x < width; x++) if (!mask[rowStart + x]) bgCount++;
+      for (let x = 0; x < width; x++) {
+        const i = (rowStart + x) * 4;
+        if (distSq(data[i], data[i + 1], data[i + 2], local) <= tightSq) bgCount++;
+      }
       return bgCount / width >= gutterFraction;
     };
-    const rowBands = contentBands(height, isRowGutter, minGutterThickness, Infinity, minSide);
+    let rowBands = contentBands(height, isRowGutter, minGutterThickness, maxRowGutterThickness, minSide);
+    rowBands = mergeThinBands(rowBands);
 
     const regions = [];
     for (const [y0, y1] of rowBands) {
       const stripHeight = y1 - y0;
       const isColGutter = (x) => {
+        const local = spanMeanCol(data, width, x, y0, y1, 2);
+        if (distSq(local.r, local.g, local.b, background) > looseSq) return false;
         let bgCount = 0;
-        for (let y = y0; y < y1; y++) if (!mask[y * width + x]) bgCount++;
+        for (let y = y0; y < y1; y++) {
+          const i = (y * width + x) * 4;
+          if (distSq(data[i], data[i + 1], data[i + 2], local) <= tightSq) bgCount++;
+        }
         return bgCount / stripHeight >= gutterFraction;
       };
-      const colBands = contentBands(width, isColGutter, minGutterThickness, maxGutterThickness, minSide);
+      let colBands = contentBands(width, isColGutter, minGutterThickness, maxColGutterThickness, minSide);
+      colBands = mergeThinBands(colBands);
       for (const [x0, x1] of colBands) regions.push({ x: x0, y: y0, width: x1 - x0, height: stripHeight });
     }
     return { regions: regions.map((b) => padBox(b, padding, width, height)).sort(readingOrder), background, mask };
