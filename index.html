@@ -1,0 +1,1079 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>RE/SHAPE — 图片调整与自动分割</title>
+<meta name="description" content="完全在浏览器本地运行的图片工具：调整尺寸、自动识别并沿边框分割组合图片。图片不会上传到任何服务器。" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%E2%9C%82%EF%B8%8F%3C/text%3E%3C/svg%3E" />
+<style>
+  :root {
+    --bg: #f5f4f1;
+    --bg-elevated: #ffffff;
+    --border: #ddd9d2;
+    --text: #1c1b19;
+    --text-muted: #6b675f;
+    --accent: #c1440e;
+    --accent-hover: #a3390b;
+    --accent-contrast: #fff8f2;
+    --danger: #b3261e;
+    --shadow: 0 1px 2px rgba(28, 27, 25, 0.06), 0 8px 24px rgba(28, 27, 25, 0.06);
+    --radius: 14px;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #171614;
+      --bg-elevated: #221f1c;
+      --border: #38352f;
+      --text: #f2efe9;
+      --text-muted: #a39d92;
+      --accent: #ef7b4b;
+      --accent-hover: #f2925f;
+      --accent-contrast: #1c1206;
+      --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.35);
+      color-scheme: dark;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    line-height: 1.5;
+  }
+  .wrap {
+    max-width: 1120px;
+    margin: 0 auto;
+    padding: 28px 20px 80px;
+  }
+  header.hero {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px 20px;
+    margin-bottom: 22px;
+  }
+  header.hero h1 {
+    font-size: 1.5rem;
+    margin: 0;
+    letter-spacing: 0.02em;
+  }
+  header.hero h1 span { color: var(--accent); }
+  header.hero p {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 0.92rem;
+  }
+  .panel {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: 20px;
+    margin-bottom: 18px;
+  }
+  .panel h2 {
+    font-size: 1rem;
+    margin: 0 0 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .badge {
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    background: color-mix(in srgb, var(--text-muted) 12%, transparent);
+    border-radius: 999px;
+    padding: 2px 9px;
+  }
+  #dropzone {
+    border: 2px dashed var(--border);
+    border-radius: var(--radius);
+    padding: 40px 20px;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color 0.15s ease, background 0.15s ease;
+    color: var(--text-muted);
+  }
+  #dropzone:hover, #dropzone.drag {
+    border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 6%, transparent);
+  }
+  #dropzone strong { color: var(--text); }
+  #fileInput { display: none; }
+  .file-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 18px;
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    margin-top: 10px;
+  }
+  .file-meta b { color: var(--text); font-weight: 600; }
+
+  .row { display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-end; }
+  .field { display: flex; flex-direction: column; gap: 4px; min-width: 100px; }
+  .field label { font-size: 0.78rem; color: var(--text-muted); }
+  input[type="number"], input[type="text"] {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 10px;
+    color: var(--text);
+    font-size: 0.9rem;
+    width: 100px;
+  }
+  input[type="range"] { accent-color: var(--accent); width: 160px; }
+  label.check {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    user-select: none;
+    cursor: pointer;
+  }
+  button {
+    font: inherit;
+    cursor: pointer;
+    border-radius: 9px;
+    border: 1px solid transparent;
+    padding: 9px 16px;
+    font-size: 0.88rem;
+    font-weight: 600;
+    transition: transform 0.05s ease, opacity 0.15s ease;
+  }
+  button:active { transform: scale(0.97); }
+  button:disabled { opacity: 0.45; cursor: not-allowed; }
+  button.primary { background: var(--accent); color: var(--accent-contrast); }
+  button.primary:hover:not(:disabled) { background: var(--accent-hover); }
+  button.ghost {
+    background: transparent;
+    border-color: var(--border);
+    color: var(--text);
+  }
+  button.ghost:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  button.small { padding: 6px 11px; font-size: 0.78rem; }
+
+  .status {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    margin-top: 10px;
+    min-height: 1.2em;
+  }
+  .status.error { color: var(--danger); }
+
+  #previewStage {
+    position: relative;
+    display: none;
+    max-width: 100%;
+    overflow: auto;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background:
+      linear-gradient(45deg, color-mix(in srgb, var(--text) 6%, transparent) 25%, transparent 25%) 0 0/16px 16px,
+      linear-gradient(-45deg, color-mix(in srgb, var(--text) 6%, transparent) 25%, transparent 25%) 0 0/16px 16px,
+      linear-gradient(45deg, transparent 75%, color-mix(in srgb, var(--text) 6%, transparent) 75%) 0 0/16px 16px,
+      linear-gradient(-45deg, transparent 75%, color-mix(in srgb, var(--text) 6%, transparent) 75%) 0 0/16px 16px;
+  }
+  #previewCanvas { display: block; max-width: 100%; height: auto; }
+  #overlaySvg { position: absolute; top: 0; left: 0; pointer-events: none; }
+  #overlaySvg rect {
+    fill: color-mix(in srgb, var(--accent) 14%, transparent);
+    stroke: var(--accent);
+    stroke-width: 2;
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 16px;
+    margin-top: 16px;
+  }
+  .card {
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 12px;
+    background: var(--bg);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .card .thumb {
+    border-radius: 8px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    background:
+      linear-gradient(45deg, color-mix(in srgb, var(--text) 6%, transparent) 25%, transparent 25%) 0 0/14px 14px,
+      linear-gradient(-45deg, color-mix(in srgb, var(--text) 6%, transparent) 25%, transparent 25%) 0 0/14px 14px,
+      linear-gradient(45deg, transparent 75%, color-mix(in srgb, var(--text) 6%, transparent) 75%) 0 0/14px 14px,
+      linear-gradient(-45deg, transparent 75%, color-mix(in srgb, var(--text) 6%, transparent) 75%) 0 0/14px 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    max-height: 180px;
+  }
+  .card .thumb img { max-width: 100%; max-height: 180px; display: block; }
+  .card .dims { font-size: 0.78rem; color: var(--text-muted); }
+  .card .resize-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .card .resize-row input[type="number"] { width: 72px; padding: 6px 8px; }
+  .card .actions { display: flex; gap: 8px; margin-top: auto; }
+
+  footer {
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 0.78rem;
+    margin-top: 36px;
+  }
+  footer a { color: var(--accent); }
+
+  .hidden { display: none !important; }
+  .stack { display: flex; flex-direction: column; gap: 12px; }
+  .divider { height: 1px; background: var(--border); margin: 16px 0; border: none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="hero">
+    <div>
+      <h1>RE<span>/</span>SHAPE</h1>
+      <p>调整尺寸 &middot; 自动识别并沿边框分割组合图片 &middot; 完全在浏览器本地处理</p>
+    </div>
+  </header>
+
+  <section class="panel">
+    <h2>1. 导入图片</h2>
+    <div id="dropzone">
+      <div><strong>点击选择图片</strong>，或将图片拖拽到此处</div>
+      <div style="font-size:0.8rem; margin-top:6px;">支持 JPG / PNG / WebP / GIF / BMP</div>
+      <input id="fileInput" type="file" accept="image/*" />
+    </div>
+    <div id="fileMeta" class="file-meta hidden"></div>
+  </section>
+
+  <section class="panel hidden" id="workPanel">
+    <h2>2. 整体调整大小 <span class="badge">可选</span></h2>
+    <div class="row">
+      <div class="field">
+        <label for="resizeW">宽度 (px)</label>
+        <input id="resizeW" type="number" min="1" />
+      </div>
+      <div class="field">
+        <label for="resizeH">高度 (px)</label>
+        <input id="resizeH" type="number" min="1" />
+      </div>
+      <label class="check"><input id="lockAspect" type="checkbox" checked /> 锁定比例</label>
+      <button class="primary" id="applyResize">应用调整</button>
+      <button class="ghost" id="resetImage">还原为原图</button>
+    </div>
+
+    <hr class="divider" />
+
+    <h2>3. 自动分割 <span class="badge">识别组合图片中的独立照片</span></h2>
+    <div class="row">
+      <button class="primary" id="runSplit">自动检测并分割</button>
+      <div class="field">
+        <label for="sensitivity">灵敏度（背景/前景阈值）</label>
+        <input id="sensitivity" type="range" min="10" max="60" value="28" />
+      </div>
+      <label class="check"><input id="showDebug" type="checkbox" /> 显示检测调试视图</label>
+    </div>
+    <p class="status" id="splitStatus"></p>
+
+    <div id="previewStage">
+      <canvas id="previewCanvas"></canvas>
+      <svg id="overlaySvg"></svg>
+    </div>
+  </section>
+
+  <section class="panel hidden" id="resultsPanel">
+    <h2>4. 结果 <span class="badge" id="resultCount"></span></h2>
+    <div class="row">
+      <button class="primary" id="downloadAll">下载全部（ZIP）</button>
+    </div>
+    <div class="grid" id="resultsGrid"></div>
+  </section>
+
+  <footer>
+    100% 本地处理 &mdash; 图片不会上传到任何服务器。源码见
+    <a href="https://github.com/aisingiorotimur/reshape-studio" target="_blank" rel="noopener">GitHub</a>。
+  </footer>
+</div>
+
+<script>
+(() => {
+  "use strict";
+
+  // ---------- Segmentation algorithm ----------
+  // Detects individually-framed photos inside one combined image by first
+  // looking for background-colored grid gutters that cut cleanly across the
+  // full width/height, then falling back to grouping non-background pixels
+  // into connected blobs for loosely-arranged layouts.
+
+  const DEFAULTS = {
+    minAreaRatio: 0.004,
+    minSide: 24,
+    padding: 4,
+    mergeGap: 4,
+    closeRadius: 1,
+    gridGutterFraction: 0.97,
+    gridMinGutterThickness: 2,
+    gridMaxGutterFraction: 0.12,
+  };
+  const SOLO_REGION_AREA_RATIO = 0.92;
+
+  function estimateBackgroundColor(data, width, height) {
+    const totalPixels = width * height;
+    const targetSamples = 20000;
+    const stride = Math.max(1, Math.floor(Math.sqrt(totalPixels / targetSamples)));
+    const bucketSize = 12;
+    const buckets = new Map();
+    for (let y = 0; y < height; y += stride) {
+      for (let x = 0; x < width; x += stride) {
+        const index = (y * width + x) * 4;
+        const r = data[index], g = data[index + 1], b = data[index + 2];
+        const key = (Math.floor(r / bucketSize) << 16) | (Math.floor(g / bucketSize) << 8) | Math.floor(b / bucketSize);
+        const bucket = buckets.get(key);
+        if (bucket) { bucket.count++; bucket.r += r; bucket.g += g; bucket.b += b; }
+        else buckets.set(key, { count: 1, r, g, b });
+      }
+    }
+    let best = null;
+    for (const bucket of buckets.values()) if (!best || bucket.count > best.count) best = bucket;
+    if (!best) return { r: 255, g: 255, b: 255 };
+    return { r: best.r / best.count, g: best.g / best.count, b: best.b / best.count };
+  }
+
+  function buildForegroundMask(data, width, height, bg, thresholdSq) {
+    const pixelCount = width * height;
+    const mask = new Uint8Array(pixelCount);
+    for (let pixel = 0, index = 0; pixel < pixelCount; pixel++, index += 4) {
+      const dr = data[index] - bg.r, dg = data[index + 1] - bg.g, db = data[index + 2] - bg.b;
+      mask[pixel] = dr * dr + dg * dg + db * db > thresholdSq ? 1 : 0;
+    }
+    return mask;
+  }
+
+  function dilateHorizontal(mask, width, height) {
+    const out = new Uint8Array(mask.length);
+    for (let y = 0; y < height; y++) {
+      const row = y * width;
+      for (let x = 0; x < width; x++) {
+        const i = row + x;
+        out[i] = mask[i] || (x > 0 && mask[i - 1]) || (x < width - 1 && mask[i + 1]) ? 1 : 0;
+      }
+    }
+    return out;
+  }
+  function dilateVertical(mask, width, height) {
+    const out = new Uint8Array(mask.length);
+    for (let y = 0; y < height; y++) {
+      const row = y * width;
+      for (let x = 0; x < width; x++) {
+        const i = row + x;
+        out[i] = mask[i] || (y > 0 && mask[i - width]) || (y < height - 1 && mask[i + width]) ? 1 : 0;
+      }
+    }
+    return out;
+  }
+  function erodeHorizontal(mask, width, height) {
+    const out = new Uint8Array(mask.length);
+    for (let y = 0; y < height; y++) {
+      const row = y * width;
+      for (let x = 0; x < width; x++) {
+        const i = row + x;
+        const left = x > 0 ? mask[i - 1] : 0, right = x < width - 1 ? mask[i + 1] : 0;
+        out[i] = mask[i] && left && right ? 1 : 0;
+      }
+    }
+    return out;
+  }
+  function erodeVertical(mask, width, height) {
+    const out = new Uint8Array(mask.length);
+    for (let y = 0; y < height; y++) {
+      const row = y * width;
+      for (let x = 0; x < width; x++) {
+        const i = row + x;
+        const up = y > 0 ? mask[i - width] : 0, down = y < height - 1 ? mask[i + width] : 0;
+        out[i] = mask[i] && up && down ? 1 : 0;
+      }
+    }
+    return out;
+  }
+  function closeMask(mask, width, height, radius) {
+    let result = mask;
+    for (let p = 0; p < radius; p++) result = dilateVertical(dilateHorizontal(result, width, height), width, height);
+    for (let p = 0; p < radius; p++) result = erodeVertical(erodeHorizontal(result, width, height), width, height);
+    return result;
+  }
+
+  function labelComponents(mask, width, height) {
+    const visited = new Uint8Array(mask.length);
+    const components = [];
+    const stackX = new Int32Array(mask.length);
+    const stackY = new Int32Array(mask.length);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const start = y * width + x;
+        if (!mask[start] || visited[start]) continue;
+        let top = 0;
+        stackX[top] = x; stackY[top] = y; top++;
+        visited[start] = 1;
+        let minX = x, maxX = x, minY = y, maxY = y, area = 0;
+        while (top > 0) {
+          top--;
+          const cx = stackX[top], cy = stackY[top];
+          area++;
+          if (cx < minX) minX = cx; if (cx > maxX) maxX = cx;
+          if (cy < minY) minY = cy; if (cy > maxY) maxY = cy;
+          for (let dy = -1; dy <= 1; dy++) {
+            const ny = cy + dy;
+            if (ny < 0 || ny >= height) continue;
+            for (let dx = -1; dx <= 1; dx++) {
+              if (dx === 0 && dy === 0) continue;
+              const nx = cx + dx;
+              if (nx < 0 || nx >= width) continue;
+              const neighbor = ny * width + nx;
+              if (mask[neighbor] && !visited[neighbor]) {
+                visited[neighbor] = 1;
+                stackX[top] = nx; stackY[top] = ny; top++;
+              }
+            }
+          }
+        }
+        components.push({ x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1, area });
+      }
+    }
+    return components;
+  }
+
+  function boxesAreClose(a, b, gap) {
+    const gapX = Math.max(0, Math.max(a.x, b.x) - Math.min(a.x + a.width, b.x + b.width));
+    const gapY = Math.max(0, Math.max(a.y, b.y) - Math.min(a.y + a.height, b.y + b.height));
+    return gapX <= gap && gapY <= gap;
+  }
+  function mergeBoxes(a, b) {
+    const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y);
+    const x2 = Math.max(a.x + a.width, b.x + b.width), y2 = Math.max(a.y + a.height, b.y + b.height);
+    return { x, y, width: x2 - x, height: y2 - y };
+  }
+  function mergeCloseBoxes(boxes, gap) {
+    let current = boxes, mergedAny = true;
+    while (mergedAny) {
+      mergedAny = false;
+      const next = [];
+      const used = new Array(current.length).fill(false);
+      for (let i = 0; i < current.length; i++) {
+        if (used[i]) continue;
+        let merged = current[i];
+        used[i] = true;
+        for (let j = i + 1; j < current.length; j++) {
+          if (used[j]) continue;
+          if (boxesAreClose(merged, current[j], gap)) {
+            merged = mergeBoxes(merged, current[j]);
+            used[j] = true;
+            mergedAny = true;
+          }
+        }
+        next.push(merged);
+      }
+      current = next;
+    }
+    return current;
+  }
+
+  function padBox(box, padding, maxWidth, maxHeight) {
+    const x = Math.max(0, box.x - padding), y = Math.max(0, box.y - padding);
+    const x2 = Math.min(maxWidth, box.x + box.width + padding), y2 = Math.min(maxHeight, box.y + box.height + padding);
+    return { x, y, width: x2 - x, height: y2 - y };
+  }
+  function readingOrder(a, b) {
+    const rowThreshold = Math.min(a.height, b.height) * 0.5;
+    if (Math.abs(a.y - b.y) > rowThreshold) return a.y - b.y;
+    return a.x - b.x;
+  }
+
+  function contentBands(length, isGutter, minGutterThickness, maxGutterThickness, minBandSize) {
+    const gutter = new Uint8Array(length);
+    for (let i = 0; i < length; i++) gutter[i] = isGutter(i) ? 1 : 0;
+    let runStart = -1;
+    for (let i = 0; i <= length; i++) {
+      const isGutterHere = i < length && gutter[i] === 1;
+      if (isGutterHere && runStart === -1) runStart = i;
+      else if (!isGutterHere && runStart !== -1) {
+        const runLength = i - runStart;
+        if (runLength < minGutterThickness || runLength > maxGutterThickness) {
+          for (let j = runStart; j < i; j++) gutter[j] = 0;
+        }
+        runStart = -1;
+      }
+    }
+    const bands = [];
+    let bandStart = -1;
+    for (let i = 0; i <= length; i++) {
+      const isContent = i < length && gutter[i] === 0;
+      if (isContent && bandStart === -1) bandStart = i;
+      else if (!isContent && bandStart !== -1) {
+        if (i - bandStart >= minBandSize) bands.push([bandStart, i]);
+        bandStart = -1;
+      }
+    }
+    return bands;
+  }
+
+  function detectGridCuts(buffer, threshold, options) {
+    const { data, width, height } = buffer;
+    const minSide = options.minSide, padding = options.padding;
+    const gutterFraction = options.gridGutterFraction;
+    const minGutterThickness = options.gridMinGutterThickness;
+    const maxGutterThickness = Math.max(24, Math.round(width * options.gridMaxGutterFraction));
+    const background = estimateBackgroundColor(data, width, height);
+    const mask = buildForegroundMask(data, width, height, background, threshold * threshold);
+
+    const isRowGutter = (y) => {
+      let bgCount = 0;
+      const rowStart = y * width;
+      for (let x = 0; x < width; x++) if (!mask[rowStart + x]) bgCount++;
+      return bgCount / width >= gutterFraction;
+    };
+    const rowBands = contentBands(height, isRowGutter, minGutterThickness, Infinity, minSide);
+
+    const regions = [];
+    for (const [y0, y1] of rowBands) {
+      const stripHeight = y1 - y0;
+      const isColGutter = (x) => {
+        let bgCount = 0;
+        for (let y = y0; y < y1; y++) if (!mask[y * width + x]) bgCount++;
+        return bgCount / stripHeight >= gutterFraction;
+      };
+      const colBands = contentBands(width, isColGutter, minGutterThickness, maxGutterThickness, minSide);
+      for (const [x0, x1] of colBands) regions.push({ x: x0, y: y0, width: x1 - x0, height: stripHeight });
+    }
+    return { regions: regions.map((b) => padBox(b, padding, width, height)).sort(readingOrder), background, mask };
+  }
+
+  function detectForegroundBlobs(buffer, threshold, options, background) {
+    const { data, width, height } = buffer;
+    const minAreaRatio = options.minAreaRatio, minSide = options.minSide, padding = options.padding;
+    const mergeGap = options.mergeGap, closeRadius = options.closeRadius;
+    const bg = background || estimateBackgroundColor(data, width, height);
+    const rawMask = buildForegroundMask(data, width, height, bg, threshold * threshold);
+    const mask = closeMask(rawMask, width, height, closeRadius);
+    const totalArea = width * height;
+    const minArea = Math.max(minAreaRatio * totalArea, minSide * minSide);
+
+    let boxes = labelComponents(mask, width, height)
+      .filter((c) => c.area >= minArea && c.width >= minSide && c.height >= minSide)
+      .map(({ x, y, width: w, height: h }) => ({ x, y, width: w, height: h }));
+    boxes = mergeCloseBoxes(boxes, mergeGap);
+
+    if (boxes.length <= 1) {
+      const solo = boxes[0];
+      if (!solo || solo.width * solo.height >= totalArea * SOLO_REGION_AREA_RATIO) return { regions: [], background: bg, mask: rawMask };
+    }
+    return { regions: boxes.map((b) => padBox(b, padding, width, height)).sort(readingOrder), background: bg, mask: rawMask };
+  }
+
+  function detectSegments(buffer, threshold, overrides) {
+    const options = Object.assign({}, DEFAULTS, overrides);
+    if (buffer.width < 2 || buffer.height < 2) return { regions: [], background: { r: 255, g: 255, b: 255 }, mask: new Uint8Array(0) };
+    const grid = detectGridCuts(buffer, threshold, options);
+    if (grid.regions.length >= 2) return grid;
+    return detectForegroundBlobs(buffer, threshold, options, grid.background);
+  }
+
+  // ---------- Minimal ZIP writer (store method, no compression) ----------
+
+  const CRC_TABLE = (() => {
+    const table = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) {
+      let c = n;
+      for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+      table[n] = c >>> 0;
+    }
+    return table;
+  })();
+  function crc32(bytes) {
+    let crc = 0xffffffff;
+    for (let i = 0; i < bytes.length; i++) crc = CRC_TABLE[(crc ^ bytes[i]) & 0xff] ^ (crc >>> 8);
+    return (crc ^ 0xffffffff) >>> 0;
+  }
+  function dosDateTime(date) {
+    const time = ((date.getHours() & 0x1f) << 11) | ((date.getMinutes() & 0x3f) << 5) | ((date.getSeconds() >> 1) & 0x1f);
+    const day = (((date.getFullYear() - 1980) & 0x7f) << 9) | (((date.getMonth() + 1) & 0xf) << 5) | (date.getDate() & 0x1f);
+    return { time, day };
+  }
+  function writeUint32LE(view, offset, value) { view.setUint32(offset, value, true); }
+  function writeUint16LE(view, offset, value) { view.setUint16(offset, value, true); }
+
+  function buildZip(entries) {
+    const encoder = new TextEncoder();
+    const now = dosDateTime(new Date());
+    const localParts = [];
+    const centralParts = [];
+    let offset = 0;
+
+    for (const entry of entries) {
+      const nameBytes = encoder.encode(entry.name);
+      const data = entry.data;
+      const crc = crc32(data);
+
+      const local = new ArrayBuffer(30 + nameBytes.length);
+      const lv = new DataView(local);
+      writeUint32LE(lv, 0, 0x04034b50);
+      writeUint16LE(lv, 4, 20);
+      writeUint16LE(lv, 6, 0);
+      writeUint16LE(lv, 8, 0);
+      writeUint16LE(lv, 10, now.time);
+      writeUint16LE(lv, 12, now.day);
+      writeUint32LE(lv, 14, crc);
+      writeUint32LE(lv, 18, data.length);
+      writeUint32LE(lv, 22, data.length);
+      writeUint16LE(lv, 26, nameBytes.length);
+      writeUint16LE(lv, 28, 0);
+      new Uint8Array(local).set(nameBytes, 30);
+
+      localParts.push(new Uint8Array(local), data);
+
+      const central = new ArrayBuffer(46 + nameBytes.length);
+      const cv = new DataView(central);
+      writeUint32LE(cv, 0, 0x02014b50);
+      writeUint16LE(cv, 4, 20);
+      writeUint16LE(cv, 6, 20);
+      writeUint16LE(cv, 8, 0);
+      writeUint16LE(cv, 10, 0);
+      writeUint16LE(cv, 12, now.time);
+      writeUint16LE(cv, 14, now.day);
+      writeUint32LE(cv, 16, crc);
+      writeUint32LE(cv, 20, data.length);
+      writeUint32LE(cv, 24, data.length);
+      writeUint16LE(cv, 28, nameBytes.length);
+      writeUint16LE(cv, 30, 0);
+      writeUint16LE(cv, 32, 0);
+      writeUint16LE(cv, 34, 0);
+      writeUint16LE(cv, 36, 0);
+      writeUint32LE(cv, 38, 0x81a40000);
+      writeUint32LE(cv, 42, offset);
+      new Uint8Array(central).set(nameBytes, 46);
+
+      centralParts.push(new Uint8Array(central));
+      offset += local.byteLength + data.length;
+    }
+
+    const centralSize = centralParts.reduce((sum, p) => sum + p.length, 0);
+    const centralOffset = offset;
+    const end = new ArrayBuffer(22);
+    const ev = new DataView(end);
+    writeUint32LE(ev, 0, 0x06054b50);
+    writeUint16LE(ev, 4, 0);
+    writeUint16LE(ev, 6, 0);
+    writeUint16LE(ev, 8, entries.length);
+    writeUint16LE(ev, 10, entries.length);
+    writeUint32LE(ev, 12, centralSize);
+    writeUint32LE(ev, 16, centralOffset);
+    writeUint16LE(ev, 20, 0);
+
+    return new Blob([...localParts, ...centralParts, new Uint8Array(end)], { type: "application/zip" });
+  }
+
+  // ---------- App state & UI wiring ----------
+
+  const MAX_CANVAS_DIMENSION = 6000;
+  const MAX_ANALYSIS_DIMENSION = 1400;
+
+  const dropzone = document.getElementById("dropzone");
+  const fileInput = document.getElementById("fileInput");
+  const fileMeta = document.getElementById("fileMeta");
+  const workPanel = document.getElementById("workPanel");
+  const resultsPanel = document.getElementById("resultsPanel");
+  const resizeW = document.getElementById("resizeW");
+  const resizeH = document.getElementById("resizeH");
+  const lockAspect = document.getElementById("lockAspect");
+  const applyResize = document.getElementById("applyResize");
+  const resetImage = document.getElementById("resetImage");
+  const runSplit = document.getElementById("runSplit");
+  const sensitivity = document.getElementById("sensitivity");
+  const showDebug = document.getElementById("showDebug");
+  const splitStatus = document.getElementById("splitStatus");
+  const previewStage = document.getElementById("previewStage");
+  const previewCanvas = document.getElementById("previewCanvas");
+  const overlaySvg = document.getElementById("overlaySvg");
+  const resultsGrid = document.getElementById("resultsGrid");
+  const resultCount = document.getElementById("resultCount");
+  const downloadAllBtn = document.getElementById("downloadAll");
+
+  let originalCanvas = null;
+  let workingCanvas = null;
+  let workingAspect = 1;
+  let cards = [];
+  let debugOverlayCanvas = null;
+
+  function canvasFromImageLike(source, width, height) {
+    const w = Math.min(MAX_CANVAS_DIMENSION, width);
+    const h = Math.min(MAX_CANVAS_DIMENSION, height);
+    const canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext("2d");
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(source, 0, 0, width, height, 0, 0, w, h);
+    return canvas;
+  }
+
+  async function decodeFile(file) {
+    if (typeof createImageBitmap === "function") {
+      try {
+        const bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
+        const canvas = canvasFromImageLike(bitmap, bitmap.width, bitmap.height);
+        bitmap.close();
+        return canvas;
+      } catch (_) { /* fall through to <img> decode */ }
+    }
+    const objectUrl = URL.createObjectURL(file);
+    try {
+      const img = new Image();
+      img.decoding = "async";
+      await new Promise((resolve, reject) => {
+        img.onload = () => resolve();
+        img.onerror = () => reject(new Error("图片解码失败"));
+        img.src = objectUrl;
+      });
+      return canvasFromImageLike(img, img.naturalWidth, img.naturalHeight);
+    } finally {
+      URL.revokeObjectURL(objectUrl);
+    }
+  }
+
+  function setStatus(el, text, isError) {
+    el.textContent = text || "";
+    el.classList.toggle("error", !!isError);
+  }
+
+  function resizeCanvasTo(source, width, height) {
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(width));
+    canvas.height = Math.max(1, Math.round(height));
+    const ctx = canvas.getContext("2d");
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(source, 0, 0, canvas.width, canvas.height);
+    return canvas;
+  }
+
+  function setWorkingCanvas(canvas) {
+    workingCanvas = canvas;
+    workingAspect = canvas.width / canvas.height;
+    resizeW.value = canvas.width;
+    resizeH.value = canvas.height;
+    renderPreview();
+    clearResults();
+  }
+
+  function renderPreview() {
+    previewStage.style.display = "block";
+    previewCanvas.width = workingCanvas.width;
+    previewCanvas.height = workingCanvas.height;
+    const ctx = previewCanvas.getContext("2d");
+    ctx.clearRect(0, 0, workingCanvas.width, workingCanvas.height);
+    if (showDebug.checked && debugOverlayCanvas) {
+      ctx.drawImage(debugOverlayCanvas, 0, 0);
+    } else {
+      ctx.drawImage(workingCanvas, 0, 0);
+    }
+    overlaySvg.setAttribute("width", workingCanvas.width);
+    overlaySvg.setAttribute("height", workingCanvas.height);
+    overlaySvg.setAttribute("viewBox", `0 0 ${workingCanvas.width} ${workingCanvas.height}`);
+    previewCanvas.style.width = previewStage.clientWidth ? "" : "";
+  }
+
+  function clearOverlay() {
+    overlaySvg.innerHTML = "";
+  }
+
+  function drawOverlay(regions) {
+    clearOverlay();
+    for (const r of regions) {
+      const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+      rect.setAttribute("x", r.x);
+      rect.setAttribute("y", r.y);
+      rect.setAttribute("width", r.width);
+      rect.setAttribute("height", r.height);
+      overlaySvg.appendChild(rect);
+    }
+  }
+
+  function cropRegion(source, region) {
+    const x = Math.max(0, Math.min(source.width - 1, Math.round(region.x)));
+    const y = Math.max(0, Math.min(source.height - 1, Math.round(region.y)));
+    const width = Math.max(1, Math.min(source.width - x, Math.round(region.width)));
+    const height = Math.max(1, Math.min(source.height - y, Math.round(region.height)));
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    canvas.getContext("2d").drawImage(source, x, y, width, height, 0, 0, width, height);
+    return canvas;
+  }
+
+  function clearResults() {
+    cards = [];
+    resultsGrid.innerHTML = "";
+    resultsPanel.classList.add("hidden");
+    clearOverlay();
+    debugOverlayCanvas = null;
+  }
+
+  function makeCard(sourceCanvas, index) {
+    const card = document.createElement("div");
+    card.className = "card";
+
+    const thumb = document.createElement("div");
+    thumb.className = "thumb";
+    const img = document.createElement("img");
+    thumb.appendChild(img);
+
+    const dims = document.createElement("div");
+    dims.className = "dims";
+
+    const resizeRow = document.createElement("div");
+    resizeRow.className = "resize-row";
+    const wInput = document.createElement("input");
+    wInput.type = "number"; wInput.min = "1";
+    const hInput = document.createElement("input");
+    hInput.type = "number"; hInput.min = "1";
+    const times = document.createElement("span");
+    times.textContent = "×";
+    times.style.color = "var(--text-muted)";
+    const applyBtn = document.createElement("button");
+    applyBtn.className = "ghost small";
+    applyBtn.textContent = "调整";
+    resizeRow.append(wInput, times, hInput, applyBtn);
+
+    const actions = document.createElement("div");
+    actions.className = "actions";
+    const downloadBtn = document.createElement("button");
+    downloadBtn.className = "primary small";
+    downloadBtn.textContent = "下载 PNG";
+    const resetBtn = document.createElement("button");
+    resetBtn.className = "ghost small";
+    resetBtn.textContent = "重置";
+    actions.append(downloadBtn, resetBtn);
+
+    card.append(thumb, dims, resizeRow, actions);
+    resultsGrid.appendChild(card);
+
+    const state = { source: sourceCanvas, current: sourceCanvas, name: `re-shape-${String(index + 1).padStart(2, "0")}.png` };
+
+    function refresh() {
+      img.src = state.current.toDataURL("image/png");
+      dims.textContent = `${state.current.width} × ${state.current.height} px`;
+      wInput.value = state.current.width;
+      hInput.value = state.current.height;
+    }
+
+    applyBtn.addEventListener("click", () => {
+      const w = parseInt(wInput.value, 10);
+      const h = parseInt(hInput.value, 10);
+      if (!Number.isFinite(w) || !Number.isFinite(h) || w < 1 || h < 1) return;
+      state.current = resizeCanvasTo(state.source, w, h);
+      refresh();
+    });
+    resetBtn.addEventListener("click", () => {
+      state.current = state.source;
+      refresh();
+    });
+    downloadBtn.addEventListener("click", () => {
+      state.current.toBlob((blob) => {
+        if (!blob) return;
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = state.name;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+      }, "image/png");
+    });
+
+    refresh();
+    return state;
+  }
+
+  function showResults(canvases) {
+    clearResults();
+    resultsPanel.classList.remove("hidden");
+    resultCount.textContent = canvases.length === 1 ? "1 张图片" : `${canvases.length} 张图片`;
+    cards = canvases.map((c, i) => makeCard(c, i));
+  }
+
+  function buildAnalysisBuffer(source) {
+    const scale = Math.min(1, MAX_ANALYSIS_DIMENSION / Math.max(source.width, source.height));
+    const w = Math.max(1, Math.round(source.width * scale));
+    const h = Math.max(1, Math.round(source.height * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = w; canvas.height = h;
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(source, 0, 0, w, h);
+    const imageData = ctx.getImageData(0, 0, w, h);
+    return { buffer: { data: imageData.data, width: w, height: h }, scale: source.width / w };
+  }
+
+  function runAutoSplit() {
+    if (!workingCanvas) return;
+    setStatus(splitStatus, "正在检测…", false);
+    downloadAllBtn.disabled = true;
+
+    setTimeout(() => {
+      try {
+        const threshold = parseInt(sensitivity.value, 10);
+        const { buffer, scale } = buildAnalysisBuffer(workingCanvas);
+        const { regions, background, mask } = detectSegments(buffer, threshold, {});
+
+        // Debug overlay: tint detected foreground pixels magenta at analysis
+        // resolution, then upscale onto a full-size canvas for display.
+        const debugSmall = document.createElement("canvas");
+        debugSmall.width = buffer.width; debugSmall.height = buffer.height;
+        const dctx = debugSmall.getContext("2d");
+        dctx.putImageData(new ImageData(new Uint8ClampedArray(buffer.data), buffer.width, buffer.height), 0, 0);
+        const debugData = dctx.getImageData(0, 0, buffer.width, buffer.height);
+        for (let p = 0, idx = 0; p < mask.length; p++, idx += 4) {
+          if (!mask[p]) continue;
+          debugData.data[idx] = Math.min(255, debugData.data[idx] * 0.35 + 255 * 0.65);
+          debugData.data[idx + 1] = Math.round(debugData.data[idx + 1] * 0.35);
+          debugData.data[idx + 2] = Math.min(255, debugData.data[idx + 2] * 0.35 + 255 * 0.65);
+        }
+        dctx.putImageData(debugData, 0, 0);
+        debugOverlayCanvas = document.createElement("canvas");
+        debugOverlayCanvas.width = workingCanvas.width;
+        debugOverlayCanvas.height = workingCanvas.height;
+        debugOverlayCanvas.getContext("2d").drawImage(debugSmall, 0, 0, workingCanvas.width, workingCanvas.height);
+
+        if (regions.length === 0) {
+          renderPreview();
+          clearOverlay();
+          showResults([workingCanvas]);
+          setStatus(
+            splitStatus,
+            `未检测到可分割的边界（背景色估计为 rgb(${Math.round(background.r)}, ${Math.round(background.g)}, ${Math.round(background.b)})），已保留整张图片。可尝试调整灵敏度。`,
+            false,
+          );
+        } else {
+          const fullRegions = regions.map((r) => ({
+            x: r.x * scale, y: r.y * scale, width: r.width * scale, height: r.height * scale,
+          }));
+          renderPreview();
+          drawOverlay(fullRegions);
+          const crops = fullRegions.map((r) => cropRegion(workingCanvas, r));
+          showResults(crops);
+          setStatus(splitStatus, `检测到 ${regions.length} 张独立图片。`, false);
+        }
+        downloadAllBtn.disabled = false;
+      } catch (err) {
+        setStatus(splitStatus, `检测失败：${err && err.message ? err.message : err}`, true);
+      }
+    }, 10);
+  }
+
+  // Drop zone / file input
+  dropzone.addEventListener("click", () => fileInput.click());
+  dropzone.addEventListener("dragover", (e) => { e.preventDefault(); dropzone.classList.add("drag"); });
+  dropzone.addEventListener("dragleave", () => dropzone.classList.remove("drag"));
+  dropzone.addEventListener("drop", (e) => {
+    e.preventDefault();
+    dropzone.classList.remove("drag");
+    const file = e.dataTransfer.files && e.dataTransfer.files[0];
+    if (file) handleFile(file);
+  });
+  fileInput.addEventListener("change", () => {
+    const file = fileInput.files && fileInput.files[0];
+    if (file) handleFile(file);
+  });
+
+  async function handleFile(file) {
+    if (!file.type.startsWith("image/") && !/\.(jpe?g|png|webp|gif|bmp)$/i.test(file.name)) {
+      setStatus(splitStatus, "不支持的文件类型，请选择图片文件。", true);
+      return;
+    }
+    try {
+      const canvas = await decodeFile(file);
+      originalCanvas = canvas;
+      setWorkingCanvas(canvas);
+      workPanel.classList.remove("hidden");
+      fileMeta.classList.remove("hidden");
+      fileMeta.innerHTML = `<span><b>${file.name}</b></span><span>${canvas.width} × ${canvas.height} px</span><span>${(file.size / 1024).toFixed(0)} KB</span>`;
+      setStatus(splitStatus, "", false);
+    } catch (err) {
+      setStatus(splitStatus, `无法读取这张图片：${err && err.message ? err.message : err}`, true);
+    }
+  }
+
+  resizeW.addEventListener("input", () => {
+    if (!lockAspect.checked) return;
+    const w = parseInt(resizeW.value, 10);
+    if (Number.isFinite(w) && w > 0) resizeH.value = Math.round(w / workingAspect);
+  });
+  resizeH.addEventListener("input", () => {
+    if (!lockAspect.checked) return;
+    const h = parseInt(resizeH.value, 10);
+    if (Number.isFinite(h) && h > 0) resizeW.value = Math.round(h * workingAspect);
+  });
+
+  applyResize.addEventListener("click", () => {
+    const w = parseInt(resizeW.value, 10);
+    const h = parseInt(resizeH.value, 10);
+    if (!Number.isFinite(w) || !Number.isFinite(h) || w < 1 || h < 1) {
+      setStatus(splitStatus, "请输入有效的宽度和高度。", true);
+      return;
+    }
+    if (w * h > 60_000_000) {
+      setStatus(splitStatus, "目标尺寸过大，请缩小后重试。", true);
+      return;
+    }
+    setWorkingCanvas(resizeCanvasTo(workingCanvas, w, h));
+    setStatus(splitStatus, "", false);
+  });
+
+  resetImage.addEventListener("click", () => {
+    if (originalCanvas) setWorkingCanvas(originalCanvas);
+  });
+
+  runSplit.addEventListener("click", runAutoSplit);
+  showDebug.addEventListener("change", renderPreview);
+
+  downloadAllBtn.addEventListener("click", async () => {
+    if (!cards.length) return;
+    downloadAllBtn.disabled = true;
+    const originalLabel = downloadAllBtn.textContent;
+    downloadAllBtn.textContent = "打包中…";
+    try {
+      const entries = [];
+      for (const card of cards) {
+        const blob = await new Promise((resolve) => card.current.toBlob(resolve, "image/png"));
+        if (!blob) continue;
+        const buf = new Uint8Array(await blob.arrayBuffer());
+        entries.push({ name: card.name, data: buf });
+      }
+      const zip = buildZip(entries);
+      const url = URL.createObjectURL(zip);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "re-shape-split.zip";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } finally {
+      downloadAllBtn.disabled = false;
+      downloadAllBtn.textContent = originalLabel;
+    }
+  });
+})();
+</script>
+</body>
+</html>
